@@ -2,6 +2,7 @@ parameter glideslope_terminal.
 parameter speed_target.
 run vordme.
 
+// TODO: refactor target holding to a library script.
 // TODO: smooth transition between two waypoints - weighted average of heading and altitude targets?
 
 // PID flow:
@@ -9,7 +10,7 @@ run vordme.
 // raw roll control <-- roll target control <-- vordme aimpoint heading / heading target control <-- localizer error = 0
 // raw yaw control <-- sideslip = 0 / heading target control <-- localizer error = 0
 
-// 5.5 degrees to clear the west side mountains.
+// 5.5 degrees to clear the west side mountains (~6000m.)
 // TODO: waypoint/airspeed mode, like ATC vectoring
 // TODO: in approach, incorporate a ground clearance term (approaches -infinity as we get closer to the ground, as a penalty)
 // BUGGY: rollout wheel steer.
@@ -88,9 +89,10 @@ lock glideslope to vang(srfprograde:vector,forehor)*((90-vang(srfprograde:vector
 
 set KERBIN_SCALE_HEIGHT to 5000.
 lock current_atm to constant:e ^ (-altitude / KERBIN_SCALE_HEIGHT).
-lock flow_v to cos(absaoa) * ship:velocity:surface:mag.
-set GAIN_SCHEDULE_REF to 11476.		// cos(AoA) * rho * v^2, at 5 degrees AoA, 0.8atm, 120m/s
-lock gain_schedule_scale to GAIN_SCHEDULE_REF / (current_atm * flow_v^2).
+lock flow_v to ship:velocity:surface:mag.
+set Q_REF to 5760.0.		// Q = 0.5 * rho * v^2, @ 0.8atm, 120m/s
+lock q to 0.5 * current_atm * flow_v^2.
+lock gain_schedule_scale to Q_REF / q.
 
 set pitch_target_pid to pidloop(20, 2, 10, -30, 30).                // input: altitude error / altitude target
 set pitch_target_pid:setpoint to 0.                                 // output: pitch target.
@@ -105,9 +107,9 @@ set pitch_control_pid:setpoint to 0.
 
 set sideslip_hold_target to 0.
 lock sideslip_target_error to sideslip - sideslip_hold_target.
-set YAW_CTRL_INIT_KP to 0.005.
-set YAW_CTRL_INIT_KI to 0.005.
-set YAW_CTRL_INIT_KD to 0.008.
+set YAW_CTRL_INIT_KP to 0.015.
+set YAW_CTRL_INIT_KI to 0.003.
+set YAW_CTRL_INIT_KD to 0.005.
 set yaw_control_pid to pidloop(YAW_CTRL_INIT_KP, YAW_CTRL_INIT_KI, YAW_CTRL_INIT_KD, -1, 1).         // input: sideslip.
 set yaw_control_pid:setpoint to 0.                                  // want sideslip = 0 for coordinated turns
 
@@ -124,7 +126,7 @@ set roll_target_pid:setpoint to 0.
 lock roll_hold_target to roll_target_pid:output.
 
 set ROLL_CTRL_INIT_KP to 0.012.
-set ROLL_CTRL_INIT_KI to 0.002.
+set ROLL_CTRL_INIT_KI to 0.001.
 set ROLL_CTRL_INIT_KD to 0.004.
 set roll_control_pid to pidloop(ROLL_CTRL_INIT_KP, ROLL_CTRL_INIT_KI, ROLL_CTRL_INIT_KD, -1, 1).        // input: roll target error
 set roll_control_pid:setpoint to 0.
@@ -139,11 +141,6 @@ set throttle_pid to pidloop(3, 0.5, 1, 0, 1).
 set throttle_pid:setpoint to thrust_pid:output.
 lock throttle to throttle_pid:output.
 
-set t_last_screen_refresh to time:seconds.
-set SCREEN_REFRESH_RATE to 5.
-set SCREEN_REFRESH_DT to 1 / SCREEN_REFRESH_RATE.
-lock should_refresh to (time:seconds - t_last_screen_refresh > SCREEN_REFRESH_DT).
-
 list engines in engine_list.
 
 function sum_thrust {//.
@@ -155,6 +152,11 @@ function sum_thrust {//.
 	}
 	return result.
 }.
+
+set t_last_screen_refresh to time:seconds.
+set SCREEN_REFRESH_RATE to 5.
+set SCREEN_REFRESH_DT to 1 / SCREEN_REFRESH_RATE.
+lock should_refresh to (time:seconds - t_last_screen_refresh > SCREEN_REFRESH_DT).
 
 when estimated_time_to_deck < GEAR_DOWN_LEAD_TIME then {
 	gear on.
@@ -259,6 +261,7 @@ until state <> 0 {
 		print "-----------".
 		print "ETA: " + estimated_time_to_deck.
 		print "Gain schedule scale: " + gain_schedule_scale.
+		print "Q: " + q.
 		set t_last_screen_refresh to time:seconds.
 	}
 }
