@@ -2,26 +2,8 @@ parameter pitch_hold_target.
 parameter heading_hold_target.
 parameter sideslip_hold_target.
 
-set CENTERLINE_EQ_A to 142.13236295.    // latitude coefficient for the linear equation
-set CENTERLINE_EQ_B to 1.               // longitude coefficient
-set CENTERLINE_EQ_C to 81.62849024.     // constant term
-set RUNWAY_WEST_THRESHOLD_LAT to -0.0485997.
-set RUNWAY_WEST_THRESHOLD_LNG to -74.724375.
-set RUNWAY_EAST_THRESHOLD_LAT to -0.0502118560109606.
-set RUNWAY_EAST_THRESHOLD_LNG to -74.4899977802028.
-set RUNWAY_ALTITUDE to 69.28267.
+
 set ROLL_TARGET_ITERM_HEADING_ERROR_THRESH to 2.
-
-lock centerline_angular_deviation to (CENTERLINE_EQ_A * ship:geoposition:lat + CENTERLINE_EQ_B * ship:geoposition:lng + CENTERLINE_EQ_C) / sqrt(CENTERLINE_EQ_A^2 + CENTERLINE_EQ_B^2).
-lock centerline_linear_deviation to -2 * constant:pi * KERBIN:RADIUS * centerline_angular_deviation / 360.
-
-lock distance_to_runway to latlng(RUNWAY_WEST_THRESHOLD_LAT, RUNWAY_WEST_THRESHOLD_LNG):distance.
-lock altitude_above_runway to ship:altitude - RUNWAY_ALTITUDE.
-
-lock localizer to arcsin(centerline_linear_deviation / distance_to_runway).
-
-lock altitude_target to tan(glideslope_target) * distance_to_runway + RUNWAY_ALTITUDE.
-lock altitude_error to ship:altitude - altitude_target.
 
 // the following are all vectors, mainly for use in the roll, pitch, and angle of attack calculations
 lock rightrotation to ship:facing*r(0,90,0).
@@ -46,19 +28,48 @@ lock pitchangle to vang(fore,forehor)*((90-vang(fore,up))/abs(90-vang(fore,up)))
 lock glideslope to vang(srfprograde:vector,forehor)*((90-vang(srfprograde:vector,up))/abs(90-vang(srfprograde:vector,up))).
 
 
+set KERBIN_SCALE_HEIGHT to 5000.
+lock current_atm to constant:e ^ (-altitude / KERBIN_SCALE_HEIGHT).
+lock flow_v to cos(absaoa) * ship:velocity:surface:mag.
+set GAIN_SCHEDULE_REF to 11476.     // cos(AoA) * rho * v^2, at 5 degrees AoA, 0.8atm, 120m/s
+lock gain_schedule_scale to GAIN_SCHEDULE_REF / (current_atm * flow_v^2).
+// TEST: 10000m (0.13atm), 200m/s
+// TEST: 20000m (0.018atm), 1400m/s
+// TEST: 5000m (0.37atm), 150m/s
+// TEST: 2000m (0.67atm), 130m/s, flaps up/down
+// Hypothesis: solving for flow_v here gives us approximate stall speed
+// (because the reference point was calculated from flaps full, landing speed)
+
 lock pitch_target_error to pitchangle - pitch_hold_target.
 set heading_target_error to 0.
 set ship_bearing_rectified to 0.
 lock sideslip_target_error to sideslip - sideslip_hold_target.
 
-set pitch_control_pid to pidloop(0.010, 0.005, 0.003, -1, 1).        // input: pitch target error
-set pitch_control_pid:setpoint to 0.                                // want pitch error = 0.
+set PITCH_CTRL_INIT_KP to 0.048.
+set PITCH_CTRL_INIT_KI to 0.016.
+set PITCH_CTRL_INIT_KD to 0.008.
+set pitch_control_pid to pidloop(PITCH_CTRL_INIT_KP, PITCH_CTRL_INIT_KI, PITCH_CTRL_INIT_KD, -1, 1).
+set pitch_control_pid:setpoint to 0.
 
-set yaw_control_pid to pidloop(0.001, 0, 0, -1, 1).         // input: sideslip.
-set yaw_control_pid:setpoint to 0.                                  // want sideslip = 0
+set YAW_CTRL_INIT_KP to 0.005.
+set YAW_CTRL_INIT_KI to 0.005.
+set YAW_CTRL_INIT_KD to 0.008.
+set yaw_control_pid to pidloop(YAW_CTRL_INIT_KP, YAW_CTRL_INIT_KI, YAW_CTRL_INIT_KD, -1, 1).         // input: sideslip.
+set yaw_control_pid:setpoint to 0.                                  // want sideslip = 0 for coordinated turns
 
-set roll_control_pid to pidloop(0.001, 0, 0, -1, 1).        // input: roll target error
-set roll_control_pid:setpoint to 0.                                 // want roll error = 0.
+set ROLL_CTRL_INIT_KP to 0.012.
+set ROLL_CTRL_INIT_KI to 0.002.
+set ROLL_CTRL_INIT_KD to 0.004.
+set roll_control_pid to pidloop(ROLL_CTRL_INIT_KP, ROLL_CTRL_INIT_KI, ROLL_CTRL_INIT_KD, -1, 1).        // input: roll target error
+set roll_control_pid:setpoint to 0.
+
+set heading_target_error to 0.
+set ship_bearing_rectified to 0.
+set roll_hold_target to 0.
+lock roll_target_error to rollangle - roll_hold_target.
+set roll_target_pid to pidloop(3, 0, 1, -30, 30).        // input: heading error
+set roll_target_pid:setpoint to 0.
+lock roll_hold_target to roll_target_pid:output.
 
 set roll_hold_target to 0.
 lock roll_target_error to rollangle - roll_hold_target.
@@ -66,12 +77,18 @@ set roll_target_pid to pidloop(1.5, 0.05, 0.5, -30, 30).        // input: headin
 set roll_target_pid:setpoint to 0.                                  // want heading error = 0.
 lock roll_hold_target to roll_target_pid:output.
 
+set t_last_screen_refresh to time:seconds.
+set SCREEN_REFRESH_RATE to 5.
+set SCREEN_REFRESH_DT to 1 / SCREEN_REFRESH_RATE.
+lock should_refresh to (time:seconds - t_last_screen_refresh > SCREEN_REFRESH_DT).
 
-
-// state 0: approach
 set state to 0.
 sas off.
-until state <> 0 {
+until sas {
+
+    set pitch_control_pid:kP to PITCH_CTRL_INIT_KP * gain_schedule_scale.
+    set roll_control_pid:kP to ROLL_CTRL_INIT_KP * gain_schedule_scale.
+    set yaw_control_pid:kP to YAW_CTRL_INIT_KP * gain_schedule_scale.
 
     if ship:bearing < 0 {
         set ship_bearing_rectified to -ship:bearing.
@@ -79,13 +96,6 @@ until state <> 0 {
         set ship_bearing_rectified to 360 - ship:bearing.
     }
 
-    // heading error: bearing - target. Modular math to convert it back to (-180, 180).
-    // 1 - turning left is closer: either 0 <= (bearing - target) <= 180 or -360 <= (bearing - target) <= -180.
-    //          error: bearing - target.
-    //          0 <= (bearing - target) <= 180 || -360 <= (bearing - target) <= -180.
-    // 2 - turning right is closer: either 0 <= (target - bearing) <= 180 or -360 <= (target - bearing) <= -180.
-    //          error: bearing - target.
-    //          -180 <= (bearing - target) <= 0 || 180 <= (bearing - target) <= 360.
     set heading_target_error to (ship_bearing_rectified - heading_hold_target).
     if abs(heading_target_error) > 180 {
         set heading_target_error to -360 * (heading_target_error / abs(heading_target_error)) + heading_target_error.
@@ -105,21 +115,19 @@ until state <> 0 {
     set ship:control:yaw to yaw_control_pid:output.
 
 
-    clearscreen.
-    print "Pitch target: " + pitch_hold_target.
-    print "Pitch error: " + pitch_target_error.
-    print "Sideslip target: " + sideslip_hold_target.
-    print "Sideslip: " + sideslip.
-    print "Heading target: " + heading_hold_target.
-    print "Heading error: " + heading_target_error.
-    print "Roll target: " + roll_hold_target.
-    print "Roll error: " + roll_target_error.
+    if should_refresh {
+        clearscreen.
+        print "Pitch target: " + pitch_hold_target.
+        print "Pitch error: " + pitch_target_error.
+        print "-------------------------------".
+        print "Heading target: " + heading_hold_target.
+        print "Roll target: " + roll_hold_target.
+        print "Roll error: " + roll_target_error.
+        print "-------------------------------".
+        print "Sideslip target: " + sideslip_hold_target.
+        print "Sideslip error: " + sideslip_target_error.
+        print "-------------------------------".
+        print "Gain schedule scale: " + gain_schedule_scale.
+        set t_last_screen_refresh to time:seconds.
+    }
 }
-
-wait until altitude_above_runway < 20.
-
-// state 1: flare
-
-
-
-// state 2: rollout
