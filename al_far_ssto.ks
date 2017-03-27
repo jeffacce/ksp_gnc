@@ -13,7 +13,7 @@ run vordme.
 // 5.5 degrees to clear the west side mountains (~6000m.)
 // TODO: waypoint/airspeed mode, like ATC vectoring
 // TODO: in approach, incorporate a ground clearance term (approaches -infinity as we get closer to the ground, as a penalty)
-// BUGGY: rollout wheel steer.
+// BUGGY: oscillating rollout wheel steer.
 
 set CENTERLINE_EQ_A to 142.13236295.    // latitude coefficient for the linear equation
 set CENTERLINE_EQ_B to 1.               // longitude coefficient
@@ -41,8 +41,9 @@ set WHEEL_STOP_SURFACE_SPEED_EPSILON to 0.1.
 set GEAR_DOWN_LEAD_TIME to 20.          // seconds, before expected touchdown
 set DEROTATION_FINAL_PITCH to -5.       // adjust this for different planes' resting pitch.
 										// should be slightly lower than resting pitch.
-set DEROTATION_BEZIER_STEP_SIZE to 0.2. // to calculate Bezier curve for angular velocity.
+set DEROTATION_BEZIER_STEP_SIZE to 0.01. // to calculate Bezier curve for angular velocity.
 										// greater size --> faster derotation.
+set THRUST_PID_ITERM_SPEED_ERROR_THRESH to 10.
 
 lock centerline_angular_deviation to (CENTERLINE_EQ_A * ship:geoposition:lat + CENTERLINE_EQ_B * ship:geoposition:lng + CENTERLINE_EQ_C) / sqrt(CENTERLINE_EQ_A^2 + CENTERLINE_EQ_B^2).
 lock centerline_linear_deviation to -2 * constant:pi * KERBIN:RADIUS * centerline_angular_deviation / 360.
@@ -99,17 +100,17 @@ set pitch_target_pid:setpoint to 0.                                 // output: p
 lock pitch_hold_target to pitch_target_pid:output.
 lock pitch_target_error to pitchangle - pitch_hold_target.
 
-set PITCH_CTRL_INIT_KP to 0.048.
-set PITCH_CTRL_INIT_KI to 0.016.
+set PITCH_CTRL_INIT_KP to 0.040.
+set PITCH_CTRL_INIT_KI to 0.010.
 set PITCH_CTRL_INIT_KD to 0.008.
 set pitch_control_pid to pidloop(PITCH_CTRL_INIT_KP, PITCH_CTRL_INIT_KI, PITCH_CTRL_INIT_KD, -1, 1).
 set pitch_control_pid:setpoint to 0.
 
 set sideslip_hold_target to 0.
 lock sideslip_target_error to sideslip - sideslip_hold_target.
-set YAW_CTRL_INIT_KP to 0.015.
-set YAW_CTRL_INIT_KI to 0.003.
-set YAW_CTRL_INIT_KD to 0.005.
+set YAW_CTRL_INIT_KP to 0.05.
+set YAW_CTRL_INIT_KI to 0.005.
+set YAW_CTRL_INIT_KD to 0.01.
 set yaw_control_pid to pidloop(YAW_CTRL_INIT_KP, YAW_CTRL_INIT_KI, YAW_CTRL_INIT_KD, -1, 1).         // input: sideslip.
 set yaw_control_pid:setpoint to 0.                                  // want sideslip = 0 for coordinated turns
 
@@ -125,22 +126,25 @@ set roll_target_pid to pidloop(3, 0, 1, -30, 30).        // input: heading error
 set roll_target_pid:setpoint to 0.
 lock roll_hold_target to roll_target_pid:output.
 
-set ROLL_CTRL_INIT_KP to 0.012.
-set ROLL_CTRL_INIT_KI to 0.001.
+set ROLL_CTRL_INIT_KP to 0.020.
+set ROLL_CTRL_INIT_KI to 0.0005.
 set ROLL_CTRL_INIT_KD to 0.004.
 set roll_control_pid to pidloop(ROLL_CTRL_INIT_KP, ROLL_CTRL_INIT_KI, ROLL_CTRL_INIT_KD, -1, 1).        // input: roll target error
 set roll_control_pid:setpoint to 0.
 
-// thrust_pid: input = surface velocity, output = required thrust
-lock current_thrust to sum_thrust(engine_list)/ship:maxthrust.
-set thrust_pid to pidloop(1, 0.5, 1, 0, 1).
-set thrust_pid:setpoint to speed_target.
+lock speed_error to ship:velocity:surface:mag - speed_target.
+set thrust_pid to pidloop(0.05, 0.01, 0.03, 0, 1).
+set thrust_pid:setpoint to 0.
+lock thrust_target to thrust_pid:output.
 
-// throttle_pid: input = required thrust, output = required throttle
-set throttle_pid to pidloop(3, 0.5, 1, 0, 1).
-set throttle_pid:setpoint to thrust_pid:output.
-lock throttle to throttle_pid:output.
+lock thrust_error to sum_thrust(engine_list)/ship:maxthrust - thrust_target.
+set throttle_pid to pidloop(10, 2, 1, 0, 1).
+set throttle_pid:setpoint to 0.
+lock throttle to thrust_target + throttle_pid:output * (1 - thrust_target).
 
+if ship:maxthrust=0 {
+	print "Ship has no usable thrust. Do you have a working engine?".
+}
 list engines in engine_list.
 
 function sum_thrust {//.
@@ -154,7 +158,7 @@ function sum_thrust {//.
 }.
 
 set t_last_screen_refresh to time:seconds.
-set SCREEN_REFRESH_RATE to 5.
+set SCREEN_REFRESH_RATE to 10.
 set SCREEN_REFRESH_DT to 1 / SCREEN_REFRESH_RATE.
 lock should_refresh to (time:seconds - t_last_screen_refresh > SCREEN_REFRESH_DT).
 
@@ -191,14 +195,14 @@ until state <> 0 {
 //	set yaw_control_pid:kI to YAW_CTRL_INIT_KI * gain_schedule_scale.
 //	set yaw_control_pid:kD to YAW_CTRL_INIT_KD * gain_schedule_scale.
 
-	// heading error: bearing - target. Modular math to convert it back to (-180, 180).
+	// heading error: bearing - target - sideslip. Modular math to convert it back to (-180, 180).
 	// 1 - turning left is closer: either 0 <= (bearing - target) <= 180 or -360 <= (bearing - target) <= -180.
 	//          error: bearing - target.
 	//          0 <= (bearing - target) <= 180 || -360 <= (bearing - target) <= -180.
 	// 2 - turning right is closer: either 0 <= (target - bearing) <= 180 or -360 <= (target - bearing) <= -180.
 	//          error: bearing - target.
 	//          -180 <= (bearing - target) <= 0 || 180 <= (bearing - target) <= 360.
-	set heading_target_error to (ship_bearing_rectified - heading_hold_target).
+	set heading_target_error to (ship_bearing_rectified - heading_hold_target - sideslip).
 	if abs(heading_target_error) > 180 {
 		set heading_target_error to -360 * (heading_target_error / abs(heading_target_error)) + heading_target_error.
 	}
@@ -208,9 +212,11 @@ until state <> 0 {
 	pitch_target_pid:update(time:seconds, altitude_error / altitude_target).
 	heading_target_pid:update(time:seconds, aim_localizer).
 
-	thrust_pid:update(time:seconds, ship:velocity:surface:mag).
-	set throttle_pid:setpoint to thrust_pid:output.
-	throttle_pid:update(time:seconds, current_thrust).
+	if abs(speed_error) > THRUST_PID_ITERM_SPEED_ERROR_THRESH {
+		thrust_pid:reset.
+	}
+	thrust_pid:update(time:seconds, speed_error).
+	throttle_pid:update(time:seconds, thrust_error).
 
 	pitch_control_pid:update(time:seconds, pitch_target_error).
 	set ship:control:pitch to pitch_control_pid:output.
@@ -230,21 +236,6 @@ until state <> 0 {
 	// assuming coming in from the west.
 	when altitude_above_runway < FLARE_ALTITUDE_THRESH then {
 		set state to 1.
-		set vs_before_flare to ship:verticalspeed.
-		set roll_hold_target to 0.
-		lights on.
-
-		set pitch_target_pid:kP to 12.
-		set pitch_target_pid:kI to 7.
-		set pitch_target_pid:kD to 2.
-		set pitch_target_pid:minoutput to -15.
-		set pitch_target_pid:maxoutput to 15.
-
-		set heading_target_pid:kP to 0.5.
-		set heading_target_pid:kI to 0.1.
-		set heading_target_pid:kD to 0.25.
-		set heading_target_pid:minoutput to -0.5.
-		set heading_target_pid:maxoutput to 0.5.
 	}
 
 	if should_refresh {
@@ -266,6 +257,25 @@ until state <> 0 {
 	}
 }
 
+set vs_before_flare to ship:verticalspeed.
+set pitch_before_flare to pitchangle.
+set roll_hold_target to 0.
+lights on.
+
+set pitch_target_pid:kP to 8.
+set pitch_target_pid:kI to 4.
+set pitch_target_pid:kD to 6.
+set pitch_target_pid:minoutput to -5.
+set pitch_target_pid:maxoutput to 5.
+
+set heading_target_pid:kP to 0.5.
+set heading_target_pid:kI to 0.1.
+set heading_target_pid:kD to 0.25.
+set heading_target_pid:minoutput to -0.5.
+set heading_target_pid:maxoutput to 0.5.
+
+lock heading_hold_target to RUNWAY_EASTWARD_HEADING + heading_target_pid:output.
+lock pitch_hold_target to pitch_target_pid:output + pitch_before_flare.
 
 // state 1: flare
 until state <> 1 {
@@ -294,6 +304,7 @@ until state <> 1 {
 	} else {
 		set ship_bearing_rectified to 360 - ship:bearing.
 	}
+	// no -sideslip term here because we're trying to control heading with yaw.
 	set heading_target_error to (ship_bearing_rectified - heading_hold_target).
 	if abs(heading_target_error) > 180 {
 		set heading_target_error to -360 * (heading_target_error / abs(heading_target_error)) + heading_target_error.
@@ -302,11 +313,6 @@ until state <> 1 {
 	pitch_target_pid:update(time:seconds, vs_target_error / abs(vs_before_flare)).
 
 	heading_target_pid:update(time:seconds, centerline_linear_deviation).
-//    if abs(centerline_linear_deviation) < HEADING_TARGET_ITERM_CENTERLINE_LINEAR_DEVIATION_EPSILON
-//    {
-//        heading_target_pid:reset.   // resets I term within [EPSILON] m of centerline.
-//                                    // stabilizes around centerline.
-//    }
 
 	pitch_control_pid:update(time:seconds, pitch_target_error).
 	set ship:control:pitch to pitch_control_pid:output.
@@ -317,16 +323,6 @@ until state <> 1 {
 
 	when ship:status = "landed" then {
 		set state to 2.
-		brakes on.
-
-		set heading_target_pid:kP to 0.3.
-		set heading_target_pid:kI to 0.02.
-		set heading_target_pid:kD to 0.04.
-		set heading_target_pid:minoutput to -2.
-		set heading_target_pid:maxoutput to 2.
-
-		set pitch_before_derotation to pitchangle.
-		set d_theta to DEROTATION_FINAL_PITCH - pitch_before_derotation.
 	}
 
 	if should_refresh {
@@ -344,8 +340,21 @@ until state <> 1 {
 }
 
 
+brakes on.
+
+set heading_target_pid:kP to 0.2.
+set heading_target_pid:kI to 0.02.
+set heading_target_pid:kD to 0.04.
+set heading_target_pid:minoutput to -2.
+set heading_target_pid:maxoutput to 2.
+
+set pitch_before_derotation to pitchangle.
+set d_theta to DEROTATION_FINAL_PITCH - pitch_before_derotation.
+set wheelsteer_control_pid to pidloop(0.001, 0.00005, 0.00015, -1, 1).
+
 // state 2: rollout
 until state <> 2 {
+
 	set yaw_control_pid:kP to YAW_CTRL_INIT_KP * gain_schedule_scale.
 	set yaw_control_pid:kI to YAW_CTRL_INIT_KI * gain_schedule_scale.
 	set yaw_control_pid:kD to YAW_CTRL_INIT_KD * gain_schedule_scale.
@@ -356,6 +365,7 @@ until state <> 2 {
 	} else {
 		set ship_bearing_rectified to 360 - ship:bearing.
 	}
+	heading_target_pid:update(time:seconds, centerline_linear_deviation).
 	set heading_target_error to (ship_bearing_rectified - heading_hold_target).
 	if abs(heading_target_error) > 180 {
 		set heading_target_error to -360 * (heading_target_error / abs(heading_target_error)) + heading_target_error.
@@ -363,10 +373,12 @@ until state <> 2 {
 
 	heading_target_pid:update(time:seconds, centerline_linear_deviation).
 	yaw_control_pid:update(time:seconds, heading_target_error).
-	set ship:control:yaw to yaw_control_pid:output.
-//    set ship:control:wheelsteer to yaw_control_pid:output.
+  set ship:control:yaw to yaw_control_pid:output.
 
-	// squared to transform the bezier curve more densely to the left. Quicker derotation at the beginning.
+	wheelsteer_control_pid:update(time:seconds, heading_target_error).
+  set ship:control:wheelsteer to -wheelsteer_control_pid:output.
+
+  // squared to transform the bezier curve more densely to the left. Quicker derotation at the beginning.
 	set bezier_y_step_sign to d_theta / abs(d_theta).
 	lock bezier_x to ((pitch_before_derotation - pitchangle) / (pitch_before_derotation - DEROTATION_FINAL_PITCH)) ^ 2.
 	lock bezier_y to (1 - bezier_x) ^ 3.
@@ -390,3 +402,14 @@ until state <> 2 {
 		set t_last_screen_refresh to time:seconds.
 	}
 }
+
+
+clearscreen.
+print "Wheel stop.".
+print "Engine shutdown.".
+for elem in engine_list {//.
+	elem:shutdown.
+}
+print "Autopilot disconnect.".
+set ship:control:neutralize to True.
+sas on.
