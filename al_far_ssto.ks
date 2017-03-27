@@ -371,7 +371,6 @@ until state <> 2 {
 		set heading_target_error to -360 * (heading_target_error / abs(heading_target_error)) + heading_target_error.
 	}
 
-	heading_target_pid:update(time:seconds, centerline_linear_deviation).
 	yaw_control_pid:update(time:seconds, heading_target_error).
   set ship:control:yaw to yaw_control_pid:output.
 
