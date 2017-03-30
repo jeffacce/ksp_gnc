@@ -3,6 +3,7 @@ parameter speed_target.
 run vordme.
 
 // TODO: refactor target holding to a library script.
+// TODO: calculate turn radius
 // TODO: smooth transition between two waypoints - weighted average of heading and altitude targets?
 
 // PID flow:
@@ -14,6 +15,7 @@ run vordme.
 // TODO: waypoint/airspeed mode, like ATC vectoring
 // TODO: in approach, incorporate a ground clearance term (approaches -infinity as we get closer to the ground, as a penalty)
 // BUGGY: oscillating rollout wheel steer.
+// TODO: pitch/roll/yaw feed angular velocity, not angular displacement
 
 set CENTERLINE_EQ_A to 142.13236295.    // latitude coefficient for the linear equation
 set CENTERLINE_EQ_B to 1.               // longitude coefficient
