@@ -1,3 +1,5 @@
+set CONFIG:IPU to 500.
+
 parameter glideslope_terminal.
 parameter speed_target.
 run vordme.
@@ -41,9 +43,9 @@ set TOUCHDOWN_STATE_ALTITUDE_EPSILON to 0.2.
 set HEADING_TARGET_ITERM_CENTERLINE_LINEAR_DEVIATION_EPSILON to 0.5.
 set WHEEL_STOP_SURFACE_SPEED_EPSILON to 0.1.
 set GEAR_DOWN_LEAD_TIME to 20.          // seconds, before expected touchdown
-set DEROTATION_FINAL_PITCH to -5.       // adjust this for different planes' resting pitch.
+set DEROTATION_FINAL_PITCH to 1.0.       // adjust this for different planes' resting pitch.
 										// should be slightly lower than resting pitch.
-set DEROTATION_BEZIER_STEP_SIZE to 0.01. // to calculate Bezier curve for angular velocity.
+set DEROTATION_STEP_SIZE to 0.3. // to calculate Bezier curve for angular velocity.
 										// greater size --> faster derotation.
 set THRUST_PID_ITERM_SPEED_ERROR_THRESH to 10.
 
@@ -102,9 +104,9 @@ set pitch_target_pid:setpoint to 0.                                 // output: p
 lock pitch_hold_target to pitch_target_pid:output.
 lock pitch_target_error to pitchangle - pitch_hold_target.
 
-set PITCH_CTRL_INIT_KP to 0.040.
-set PITCH_CTRL_INIT_KI to 0.010.
-set PITCH_CTRL_INIT_KD to 0.008.
+set PITCH_CTRL_INIT_KP to 0.030. //0.040
+set PITCH_CTRL_INIT_KI to 0.0075. //0.010
+set PITCH_CTRL_INIT_KD to 0.006. //0.008
 set pitch_control_pid to pidloop(PITCH_CTRL_INIT_KP, PITCH_CTRL_INIT_KI, PITCH_CTRL_INIT_KD, -1, 1).
 set pitch_control_pid:setpoint to 0.
 
@@ -267,8 +269,8 @@ lights on.
 set pitch_target_pid:kP to 8.
 set pitch_target_pid:kI to 4.
 set pitch_target_pid:kD to 6.
-set pitch_target_pid:minoutput to -5.
-set pitch_target_pid:maxoutput to 5.
+set pitch_target_pid:minoutput to -8.
+set pitch_target_pid:maxoutput to 8.
 
 set heading_target_pid:kP to 0.5.
 set heading_target_pid:kI to 0.1.
@@ -351,6 +353,7 @@ set heading_target_pid:minoutput to -2.
 set heading_target_pid:maxoutput to 2.
 
 set pitch_before_derotation to pitchangle.
+set timer_start to time:seconds.
 set d_theta to DEROTATION_FINAL_PITCH - pitch_before_derotation.
 set wheelsteer_control_pid to pidloop(0.001, 0.00005, 0.00015, -1, 1).
 
@@ -379,11 +382,17 @@ until state <> 2 {
 	wheelsteer_control_pid:update(time:seconds, heading_target_error).
   set ship:control:wheelsteer to -wheelsteer_control_pid:output.
 
-  // squared to transform the bezier curve more densely to the left. Quicker derotation at the beginning.
-	set bezier_y_step_sign to d_theta / abs(d_theta).
-	lock bezier_x to ((pitch_before_derotation - pitchangle) / (pitch_before_derotation - DEROTATION_FINAL_PITCH)) ^ 2.
-	lock bezier_y to (1 - bezier_x) ^ 3.
-	set pitch_hold_target to pitchangle - bezier_y * DEROTATION_BEZIER_STEP_SIZE * bezier_y_step_sign.
+    // squared to transform the bezier curve more densely to the left. Quicker derotation at the beginning.
+	// set bezier_y_step_sign to d_theta / abs(d_theta).
+	// lock bezier_x to ((pitch_before_derotation - pitchangle) / (pitch_before_derotation - DEROTATION_FINAL_PITCH)) ^ 2.
+	// lock bezier_y to (1 - bezier_x) ^ 3.
+	// set pitch_hold_target to pitchangle - bezier_y * DEROTATION_BEZIER_STEP_SIZE * bezier_y_step_sign.
+
+	if pitch_hold_target >= DEROTATION_FINAL_PITCH {
+		set pitch_hold_target to pitch_before_derotation + DEROTATION_STEP_SIZE * (time:seconds - timer_start).
+	} else {
+		set pitch_hold_target to DEROTATION_FINAL_PITCH.
+	}
 
 	pitch_control_pid:update(time:seconds, pitch_target_error).
 	set ship:control:pitch to pitch_control_pid:output.
